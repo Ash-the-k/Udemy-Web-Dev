@@ -2,8 +2,6 @@
 # Node modules (always ignore this)
 node_modules/
 
-# Environment variables (for secrets like API keys)
-.env
 
 # Logs
 logs/
