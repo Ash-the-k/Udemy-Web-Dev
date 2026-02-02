@@ -12,13 +12,17 @@ const saltRounds = 10;
 
 app.set("view engine", "ejs");
 
+// ---------------- SESSION SETUP ----------------
+// express-session creates a session object on the server
+// and sends a session ID cookie to the browser.
+// This is what lets the server "remember" users.
 app.use(
   session({
-    secret: "TOPSECRETWORD",
-    resave: false,
-    saveUninitialized: true,
+    secret: "TOPSECRETWORD", // signs cookie so it can't be tampered with
+    resave: false, // don't save session if nothing changed
+    saveUninitialized: true, // create session even if empty
     cookie: {
-      maxAge: 1000 * 60 * 60 * 24,
+      maxAge: 1000 * 60 * 60 * 24, // session expires after 1 day
     },
   }),
 );
@@ -26,9 +30,13 @@ app.use(
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
 
+// ---------------- PASSPORT INITIALIZATION ----------------
+// initialize() → activates passport
+// session() → connects passport with express-session
 app.use(passport.initialize());
 app.use(passport.session());
 
+// ---------------- DATABASE CONNECTION ----------------
 const db = new pg.Client({
   user: "postgres",
   host: "localhost",
@@ -37,6 +45,8 @@ const db = new pg.Client({
   port: 5432,
 });
 db.connect();
+
+// ---------------- ROUTES ----------------
 
 app.get("/", (req, res) => {
   res.render("home.ejs");
@@ -50,20 +60,25 @@ app.get("/register", (req, res) => {
   res.render("register.ejs");
 });
 
+// Protected route – only accessible if logged in
 app.get("/secrets", (req, res) => {
-  console.log(req.user);
+  console.log(req.user); // user object attached by passport.deserializeUser
+
   if (req.isAuthenticated()) {
+    // true if session valid and user exists
     res.render("secrets.ejs");
   } else {
     res.redirect("/login");
   }
 });
 
+// ---------------- REGISTER ----------------
 app.post("/register", async (req, res) => {
   const email = req.body.username;
   const password = req.body.password;
 
   try {
+    // Check if user already exists
     const checkResult = await db.query("SELECT * FROM users WHERE email = $1", [
       email,
     ]);
@@ -71,22 +86,28 @@ app.post("/register", async (req, res) => {
     if (checkResult.rows.length > 0) {
       res.send("Email already exists. Try logging in.");
     } else {
-      //hashing the password and saving it in the database
+      // Hash password before storing in DB
       bcrypt.hash(password, saltRounds, async (err, hash) => {
         if (err) {
           console.error("Error hashing password:", err);
         } else {
-          console.log("Hashed Password:", hash);
           const result = await db.query(
             "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *",
             [email, hash],
           );
+
           const user = result.rows[0];
+
+          // req.login() manually logs the user in
+          // triggers passport.serializeUser and creates session
           req.login(user, (err) => {
-            console.log(err);
+            if (err) {
+              console.log(err);
+              return res.redirect("/login");
+            }
+            // After session is created, redirect to protected page
             res.redirect("/secrets");
           });
-          res.render("secrets.ejs");
         }
       });
     }
@@ -95,6 +116,9 @@ app.post("/register", async (req, res) => {
   }
 });
 
+// ---------------- LOGIN ----------------
+// passport.authenticate triggers the local strategy
+// and automatically logs user in on success
 app.post(
   "/login",
   passport.authenticate("local", {
@@ -103,30 +127,31 @@ app.post(
   }),
 );
 
+// ---------------- LOCAL STRATEGY ----------------
+// Defines how username & password are verified
 passport.use(
   new Strategy(async function verify(username, password, cb) {
-    console.log(username);
-
     try {
       const result = await db.query("SELECT * FROM users WHERE email = $1", [
         username,
       ]);
+
       if (result.rows.length > 0) {
         const user = result.rows[0];
         const storedHashedPassword = user.password;
-        bcrypt.compare(password, storedHashedPassword, (err, result) => {
-          if (err) {
-            return cb(err);
+
+        // Compare entered password with hashed password in DB
+        bcrypt.compare(password, storedHashedPassword, (err, match) => {
+          if (err) return cb(err);
+
+          if (match) {
+            return cb(null, user); // SUCCESS → triggers serializeUser
           } else {
-            if (result) {
-              return cb(null, user);
-            } else {
-              return cb(null, false);
-            }
+            return cb(null, false); // FAILURE
           }
         });
       } else {
-        return cb("User not found");
+        return cb(null, false);
       }
     } catch (err) {
       return cb(err);
@@ -134,14 +159,26 @@ passport.use(
   }),
 );
 
+// ---------------- SERIALIZE USER ----------------
+// Runs ONLY at login time
+// Stores user identity into session
 passport.serializeUser((user, cb) => {
-  cb(null, user);
+  cb(null, user.id); // best practice: store only ID
 });
 
-passport.deserializeUser((user, cb) => {
-  cb(null, user);
+// ---------------- DESERIALIZE USER ----------------
+// Runs on every request with valid session
+// Converts stored ID → full user object → attaches to req.user
+passport.deserializeUser(async (id, cb) => {
+  try {
+    const result = await db.query("SELECT * FROM users WHERE id = $1", [id]);
+    cb(null, result.rows[0]);
+  } catch (err) {
+    cb(err);
+  }
 });
 
+// ---------------- SERVER START ----------------
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
